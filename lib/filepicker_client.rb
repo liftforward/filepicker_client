@@ -47,7 +47,7 @@ class FilepickerClient
     if options[:handle]
       policy['handle'] = options[:handle]
     elsif options[:path]
-      policy['path'] = (options[:path] + '/').gsub /\/+/, '/' # ensure path has a single, trailing '/'
+      policy['path'] = (options[:path] + '/').gsub(/\/+/, '/') # ensure path has a single, trailing '/'
     end
 
     if options[:min_size]
@@ -94,22 +94,25 @@ class FilepickerClient
     )
 
     uri = file_uri(handle)
-    uri.query = URI.encode_www_form(
+    uri.query = encode_uri_query(
       signature: signage[:signature],
       policy: signage[:encoded_policy]
     )
 
     return convert_hash(
       uri: uri,
-      expiry: signage[:policy]['expiry'].to_i
+      expiry: signage[:policy]['expiry'].to_i,
+      signature: signage[:signature],
+      policy: signage[:encoded_policy]
     )
   end
 
   # Store the given file at the given storage path through Filepicker.
-  # @param path [String] Path the file should be organized under in the destination storage
   # @param file [File] File to upload
+  # @param path [String] Path the file should be organized under in the destination storage
+  # @param options [Hash] optional additional filepicker.io request params
   # @return [FilepickerClientFile] Object representing the uploaded file in Filepicker
-  def store(file, path=nil)
+  def store(file, path=nil, options = {})
     signage = sign(path: path, call: :store)
 
     uri = URI.parse(FP_API_PATH)
@@ -118,8 +121,11 @@ class FilepickerClient
       signature: signage[:signature],
       policy: signage[:encoded_policy]
     }
+
+    query_params = query_params.merge(options)
+
     query_params[:path] = signage[:policy]['path'] if path
-    uri.query = URI.encode_www_form(query_params)
+    uri.query = encode_uri_query(query_params)
     resource = get_fp_resource uri
 
     response = resource.post fileUpload: file
@@ -131,6 +137,26 @@ class FilepickerClient
       return file
     else
       raise FilepickerClientError, "failed to store (code: #{response.code})"
+    end
+  end
+
+  # Store provided string in a file with the provided file name under the target storage path through Filepicker.
+  # @param content [String] Contents of the file which should created in in the destination storage
+  # @param file_name [String] Name that should be given to the file in Filepicker
+  # @param path [String] Path the file should be organized under in the destination storage
+  # @param options [Hash] optional additional filepicker.io request params
+  # @return [FilepickerClientFile] Object representing the uploaded file in Filepicker
+  def store_content(content, file_name, path=nil, options = {})
+    store_file = Tempfile.new(file_name)
+
+    begin
+      store_file.write content
+      store_file.rewind
+
+      return store(store_file, path, options)
+    ensure
+      store_file.close
+      store_file.unlink
     end
   end
 
@@ -148,7 +174,7 @@ class FilepickerClient
       policy: signage[:encoded_policy]
     }
     query_params[:path] = signage[:policy]['path'] if path
-    uri.query = URI.encode_www_form(query_params)
+    uri.query = encode_uri_query(query_params)
 
     resource = get_fp_resource uri
 
@@ -196,7 +222,7 @@ class FilepickerClient
       storeLocation: 'S3'
     )
     options[:storePath] = signage[:policy]['path'] if path
-    uri.query = URI.encode_www_form(options)
+    uri.query = encode_uri_query(options)
 
     resource = get_fp_resource uri
 
@@ -252,7 +278,7 @@ class FilepickerClient
       signature: signage[:signature],
       policy: signage[:encoded_policy]
     )
-    uri.query = URI.encode_www_form(options)
+    uri.query = encode_uri_query(options)
 
     resource = get_fp_resource uri
 
@@ -292,7 +318,7 @@ class FilepickerClient
     signage = sign(handle: handle, call: :write)
 
     uri = file_uri(handle)
-    uri.query = URI.encode_www_form(
+    uri.query = encode_uri_query(
       key: @api_key,
       signature: signage[:signature],
       policy: signage[:encoded_policy]
@@ -317,7 +343,7 @@ class FilepickerClient
     signage = sign(handle: handle, call: :writeUrl)
 
     uri = file_uri(handle)
-    uri.query = URI.encode_www_form(
+    uri.query = encode_uri_query(
       key: @api_key,
       signature: signage[:signature],
       policy: signage[:encoded_policy]
@@ -341,7 +367,7 @@ class FilepickerClient
     signage = sign(handle: handle, call: :remove)
 
     uri = file_uri(handle)
-    uri.query = URI.encode_www_form(
+    uri.query = encode_uri_query(
       key: @api_key,
       signature: signage[:signature],
       policy: signage[:encoded_policy]
@@ -361,7 +387,7 @@ class FilepickerClient
   private
 
   def get_fp_resource(uri)
-    resource = RestClient::Resource.new(
+    RestClient::Resource.new(
       uri.to_s,
       verify_ssl: (@filepicker_cert ? OpenSSL::SSL::VERIFY_PEER : OpenSSL::SSL::VERIFY_NONE),
       ssl_client_cert: @filepicker_cert
@@ -370,6 +396,28 @@ class FilepickerClient
 
   def convert_hash(hash)
     HashWithIndifferentAccess.new(hash)
+  end
+
+  # Convert a hash of query params into a string.
+  # This method does not encode the signature or policy params, as they are
+  # already encoded in the format expected by the Filepicker API
+  def encode_uri_query(params)
+    encodable = {}
+    unencodable = {}
+    unencodable_params = ["signature", "policy"]
+    params.each_pair do |key, value|
+      if unencodable_params.include?(key.to_s)
+        unencodable[key] = value
+      else
+        encodable[key] = value
+      end
+    end
+    query = URI.encode_www_form(encodable)
+    unless unencodable.empty?
+      query << '&' if query.length > 0
+      query << unencodable.map{|k,v| "#{k}=#{v}"}.join('&')
+    end
+    query
   end
 end
 
